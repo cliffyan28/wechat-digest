@@ -62,7 +62,48 @@ def find_group_username(group_name):
     return None
 
 
-def extract_messages(group_username, target_date, hour_offset=0):
+def _load_voice_data(db_dir, keys, ts_start, ts_end):
+    """从 media_0.db 加载语音二进制数据，返回 {create_time: voice_data}"""
+    if 'message/media_0.db' not in keys:
+        return {}
+    enc_key = bytes.fromhex(keys['message/media_0.db']['enc_key'])
+    db_path = os.path.join(db_dir, 'message/media_0.db')
+    if not os.path.exists(db_path):
+        return {}
+
+    cache_dir = tempfile.mkdtemp(prefix='wechat-voice-')
+    out_path = os.path.join(cache_dir, 'dec.db')
+    try:
+        full_decrypt(db_path, out_path, enc_key)
+        wal_path = db_path + '-wal'
+        if os.path.exists(wal_path):
+            decrypt_wal(wal_path, out_path, enc_key)
+        conn = sqlite3.connect(out_path)
+        rows = conn.execute("""
+            SELECT create_time, voice_data FROM VoiceInfo
+            WHERE create_time >= ? AND create_time < ?
+        """, (ts_start, ts_end)).fetchall()
+        conn.close()
+        return {ts: data for ts, data in rows}
+    except Exception:
+        return {}
+    finally:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+
+
+def _get_transcriber(voice_engine):
+    """按需加载 VoiceTranscriber，避免无语音时的开销"""
+    try:
+        from voice_to_text import VoiceTranscriber
+        return VoiceTranscriber(engine=voice_engine)
+    except Exception:
+        return None
+
+
+def extract_messages(group_username, target_date, hour_offset=0, voice_engine='auto'):
     """从数据库提取消息，返回格式化的文本行列表"""
     cfg, keys_file = load_config()
     with open(keys_file) as f:
@@ -110,10 +151,19 @@ def extract_messages(group_username, target_date, hour_offset=0):
         conn.close()
         os.remove(out_path)
 
+    # 检查是否有语音消息，按需加载语音数据和转写器
+    has_voice = any((lt & 0xFFFFFFFF) == 34 for _, _, _, lt in rows)
+    voice_data_map = {}
+    transcriber = None
+    if has_voice:
+        voice_data_map = _load_voice_data(db_dir, keys, ts_start, ts_end)
+        if voice_data_map:
+            transcriber = _get_transcriber(voice_engine)
+
     output_lines = []
     for ts, content, ct, lt in rows:
         real_type = lt & 0xFFFFFFFF
-        if real_type not in (1, 49):
+        if real_type not in (1, 34, 49):
             continue
         if not content:
             continue
@@ -137,6 +187,23 @@ def extract_messages(group_username, target_date, hour_offset=0):
                 sender = 'unknown'
                 msg = text.strip()
             output_lines.append(f'[{dt_str}] {sender}: {msg}')
+
+        elif real_type == 34:
+            # 语音消息
+            sender_m = re.search(r'fromusername="(.*?)"', text)
+            sender = sender_m.group(1) if sender_m else 'unknown'
+            length_m = re.search(r'voicelength="(\d+)"', text)
+            length_sec = int(length_m.group(1)) / 1000 if length_m else 0
+
+            voice_bytes = voice_data_map.get(ts)
+            transcribed = None
+            if voice_bytes and transcriber:
+                transcribed = transcriber.transcribe(voice_bytes)
+
+            if transcribed:
+                output_lines.append(f'[{dt_str}] {sender}: [语音] {transcribed}')
+            else:
+                output_lines.append(f'[{dt_str}] {sender}: [语音 {length_sec:.0f}秒]')
 
         elif real_type == 49:
             title_m = re.search(r'<title><!\[CDATA\[(.*?)\]\]></title>', text, re.DOTALL)
@@ -169,6 +236,8 @@ if __name__ == '__main__':
     parser.add_argument('date', help='目标日期 (YYYY-MM-DD)')
     parser.add_argument('--hour-offset', type=int, default=0,
                         help='时间窗口偏移小时数（默认 0，即 0:00-0:00）')
+    parser.add_argument('--voice-engine', choices=['auto', 'xfyun', 'whisper', 'none'],
+                        default='auto', help='语音转写引擎（默认 auto：讯飞>Whisper>跳过）')
     args = parser.parse_args()
 
     # 查找群 username
@@ -186,7 +255,8 @@ if __name__ == '__main__':
     print(f"群: {args.group_name} ({group_username})", file=sys.stderr)
     print(f"时间窗口: {args.date} {args.hour_offset:02d}:00 ~ +1d {args.hour_offset:02d}:00", file=sys.stderr)
 
-    lines = extract_messages(group_username, args.date, args.hour_offset)
-    print(f"提取 {len(lines)} 条消息（文本+链接）", file=sys.stderr)
+    lines = extract_messages(group_username, args.date, args.hour_offset,
+                             voice_engine=args.voice_engine)
+    print(f"提取 {len(lines)} 条消息（文本+链接+语音）", file=sys.stderr)
 
     print('\n'.join(lines))

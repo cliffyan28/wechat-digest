@@ -103,12 +103,45 @@ python3 extract-messages.py "群名" 2026-04-09 --hour-offset 2
 python3 extract-all-private.py 2026-04-09 --hour-offset 2
 python3 extract-all-private.py 2026-04-09 --min-messages 5  # 只输出 ≥5 条消息的对话
 
+# 语音转写（自动检测可用引擎：讯飞 > Whisper > 跳过）
+python3 voice_to_text.py 2026-04-09 --hour-offset 2
+python3 voice_to_text.py 2026-04-09 --engine whisper  # 强制用 Whisper
+
+# 提取消息时同时转写语音（--voice-engine 可选 auto/xfyun/whisper/none）
+python3 extract-messages.py "群名" 2026-04-09 --hour-offset 2 --voice-engine auto
+
 # 查询公众号文章
 python3 biz-articles.py 某公众号 --since 2026-04-01 --format md
 python3 biz-articles.py --list  # 列出所有关注的公众号
 ```
 
-### 6. 设置每日自动运行（macOS launchd）
+### 6. 配置语音转写（可选）
+
+语音消息会自动从数据库提取 SILK 音频并转为文字。支持两种引擎：
+
+**方式一：讯飞一句话识别（推荐，中文最准）**
+
+注册 [讯飞开放平台](https://www.xfyun.cn/)，创建应用，开通"语音听写"服务，然后设置环境变量：
+
+```bash
+export XFYUN_APP_ID="你的AppID"
+export XFYUN_API_KEY="你的APIKey"
+export XFYUN_API_SECRET="你的APISecret"
+```
+
+需要额外安装：`pip install websocket-client`
+
+**方式二：Whisper 本地模型（免费，离线可用）**
+
+```bash
+pip install openai-whisper
+```
+
+首次运行会下载模型（base 约 140MB）。中文准确率不如讯飞，但无需联网。
+
+**不配置**：语音消息会显示为 `[语音 8秒]`，不影响其他功能。
+
+### 7. 设置每日自动运行（macOS launchd）
 
 创建 `~/Library/LaunchAgents/com.wechat-digest.plist`：
 
@@ -228,6 +261,7 @@ wechat-digest/
 ├── init-keys.py            # 密钥提取（替代 wechat-cli init）
 ├── extract-messages.py     # 群聊消息提取（直接读数据库）
 ├── extract-all-private.py  # 所有私聊消息提取（按联系人分组）
+├── voice_to_text.py        # 语音转文字模块（讯飞/Whisper）
 ├── biz-articles.py         # 公众号文章查询
 ├── wechat-digest.sh        # 主流程脚本（提取 → 总结 → PDF）
 ├── crypto/                 # 解密模块（来自 wechat-cli, Apache 2.0）

@@ -66,7 +66,48 @@ def load_contact_names(db_dir, keys):
     return names
 
 
-def extract_all_private(target_date, hour_offset=0, min_messages=1):
+def _load_voice_data(db_dir, keys, ts_start, ts_end):
+    """从 media_0.db 加载语音二进制数据，返回 {create_time: voice_data}"""
+    if 'message/media_0.db' not in keys:
+        return {}
+    enc_key = bytes.fromhex(keys['message/media_0.db']['enc_key'])
+    db_path = os.path.join(db_dir, 'message/media_0.db')
+    if not os.path.exists(db_path):
+        return {}
+
+    cache_dir = tempfile.mkdtemp(prefix='wechat-voice-')
+    out_path = os.path.join(cache_dir, 'dec.db')
+    try:
+        full_decrypt(db_path, out_path, enc_key)
+        wal_path = db_path + '-wal'
+        if os.path.exists(wal_path):
+            decrypt_wal(wal_path, out_path, enc_key)
+        conn = sqlite3.connect(out_path)
+        rows = conn.execute("""
+            SELECT create_time, voice_data FROM VoiceInfo
+            WHERE create_time >= ? AND create_time < ?
+        """, (ts_start, ts_end)).fetchall()
+        conn.close()
+        return {ts: data for ts, data in rows}
+    except Exception:
+        return {}
+    finally:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+
+
+def _get_transcriber(voice_engine):
+    """按需加载 VoiceTranscriber"""
+    try:
+        from voice_to_text import VoiceTranscriber
+        return VoiceTranscriber(engine=voice_engine)
+    except Exception:
+        return None
+
+
+def extract_all_private(target_date, hour_offset=0, min_messages=1, voice_engine='auto'):
     """提取所有私聊消息，返回 {username: [(timestamp, sender, text), ...]}"""
     cfg, keys_file = load_config()
     with open(keys_file) as f:
@@ -104,6 +145,10 @@ def extract_all_private(target_date, hour_offset=0, min_messages=1):
     # 加载联系人显示名
     contact_names = load_contact_names(db_dir, keys)
 
+    # 预加载语音数据（所有私聊共享）
+    voice_data_map = _load_voice_data(db_dir, keys, ts_start, ts_end)
+    transcriber = _get_transcriber(voice_engine) if voice_data_map else None
+
     all_chats = {}
     for (username,) in private_users:
         table = 'Msg_' + hashlib.md5(username.encode()).hexdigest()
@@ -123,7 +168,7 @@ def extract_all_private(target_date, hour_offset=0, min_messages=1):
         messages = []
         for ts, content, ct, lt in rows:
             real_type = lt & 0xFFFFFFFF
-            if real_type not in (1, 49):
+            if real_type not in (1, 34, 49):
                 continue
             if not content:
                 continue
@@ -148,6 +193,27 @@ def extract_all_private(target_date, hour_offset=0, min_messages=1):
                     sender = '我'
                     msg = text.strip()
                 messages.append(f'[{dt_str}] {sender}: {msg}')
+
+            elif real_type == 34:
+                # 语音消息
+                sender_m = re.search(r'fromusername="(.*?)"', text)
+                sender_id = sender_m.group(1) if sender_m else None
+                if sender_id:
+                    sender = contact_names.get(sender_id, sender_id)
+                else:
+                    sender = '我'
+                length_m = re.search(r'voicelength="(\d+)"', text)
+                length_sec = int(length_m.group(1)) / 1000 if length_m else 0
+
+                voice_bytes = voice_data_map.get(ts)
+                transcribed = None
+                if voice_bytes and transcriber:
+                    transcribed = transcriber.transcribe(voice_bytes)
+
+                if transcribed:
+                    messages.append(f'[{dt_str}] {sender}: [语音] {transcribed}')
+                else:
+                    messages.append(f'[{dt_str}] {sender}: [语音 {length_sec:.0f}秒]')
 
             elif real_type == 49:
                 title_m = re.search(r'<title><!\[CDATA\[(.*?)\]\]></title>', text, re.DOTALL)
@@ -210,13 +276,15 @@ if __name__ == '__main__':
                         help='时间窗口偏移小时数（默认 0，即 0:00-0:00）')
     parser.add_argument('--min-messages', type=int, default=1,
                         help='最少消息数，低于此数的对话不输出（默认 1）')
+    parser.add_argument('--voice-engine', choices=['auto', 'xfyun', 'whisper', 'none'],
+                        default='auto', help='语音转写引擎（默认 auto：讯飞>Whisper>跳过）')
     args = parser.parse_args()
 
     print(f"时间窗口: {args.date} {args.hour_offset:02d}:00 ~ +1d {args.hour_offset:02d}:00",
           file=sys.stderr)
 
     all_chats, contact_names = extract_all_private(
-        args.date, args.hour_offset, args.min_messages
+        args.date, args.hour_offset, args.min_messages, voice_engine=args.voice_engine
     )
 
     if not all_chats:
