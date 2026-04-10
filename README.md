@@ -99,6 +99,10 @@ bash wechat-digest.sh 2026-04-09
 # 只提取聊天记录（不做总结）
 python3 extract-messages.py "群名" 2026-04-09 --hour-offset 2
 
+# 提取所有私聊记录（按联系人分组，显示备注名）
+python3 extract-all-private.py 2026-04-09 --hour-offset 2
+python3 extract-all-private.py 2026-04-09 --min-messages 5  # 只输出 ≥5 条消息的对话
+
 # 查询公众号文章
 python3 biz-articles.py 某公众号 --since 2026-04-01 --format md
 python3 biz-articles.py --list  # 列出所有关注的公众号
@@ -223,6 +227,7 @@ wechat-digest/
 ├── prompt-template.txt     # LLM 总结 prompt 模板（可自定义）
 ├── init-keys.py            # 密钥提取（替代 wechat-cli init）
 ├── extract-messages.py     # 群聊消息提取（直接读数据库）
+├── extract-all-private.py  # 所有私聊消息提取（按联系人分组）
 ├── biz-articles.py         # 公众号文章查询
 ├── wechat-digest.sh        # 主流程脚本（提取 → 总结 → PDF）
 ├── crypto/                 # 解密模块（来自 wechat-cli, Apache 2.0）
