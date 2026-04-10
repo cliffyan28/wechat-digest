@@ -134,6 +134,37 @@ launchctl load ~/Library/LaunchAgents/com.wechat-digest.plist
 
 脚本会自动等待微信启动后再运行（最多等 30 分钟）。
 
+### Windows 用户说明
+
+Python 脚本（`init-keys.py`、`extract-messages.py`、`biz-articles.py`）是跨平台的，Windows 可直接使用。密钥提取走的是 Windows API 内存扫描（`scanner_windows.py`），不需要 C 二进制。
+
+`wechat-digest.sh` 是 bash 脚本，Windows 需要做以下适配：
+
+1. **运行环境**：用 Git Bash 或 WSL 运行，或者改写为 `.bat`/PowerShell 脚本
+2. **微信进程检测**：`pgrep -x "WeChat"` 改为 `tasklist /FI "IMAGENAME eq Weixin.exe"`
+3. **昨天日期**：`date -v-1d` 改为 PowerShell 的 `(Get-Date).AddDays(-1).ToString("yyyy-MM-dd")`
+4. **Chrome 路径**：改为 `"C:\Program Files\Google\Chrome\Application\chrome.exe"`（或设置 `CHROME_PATH` 环境变量）
+5. **定时任务**：用 Windows 任务计划程序替代 launchd
+
+或者你也可以只用 Python 脚本提取消息，手动喂给 Claude 总结：
+
+```bash
+python extract-messages.py "群名" 2026-04-09 --hour-offset 2 > chat.txt
+cat chat.txt | claude -p "请总结这段群聊记录..." > summary.md
+```
+
+### Linux 用户说明
+
+密钥提取需要 root 权限（通过 `/proc/<pid>/mem` 读取进程内存）：
+
+```bash
+sudo python3 init-keys.py
+```
+
+`wechat-digest.sh` 基本兼容 Linux，只需注意：
+- Chrome 路径改为 `google-chrome` 或 `chromium`（设置 `CHROME_PATH` 环境变量）
+- 定时任务用 cron 或 systemd timer 替代 launchd
+
 ## 踩坑记录
 
 ### 1. wechat-cli history 不稳定
