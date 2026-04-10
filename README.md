@@ -220,9 +220,11 @@ wechat-digest/
     └── 2026-04-09-我的群-摘要.pdf
 ```
 
-## 关于编译二进制
+## 安全说明：预编译二进制
 
-项目包含一个预编译的 macOS ARM64 二进制文件 `crypto/keys/bin/find_all_keys_macos.arm64`，用于从微信进程内存中扫描密钥。如果你不信任预编译二进制，可以从源码自行编译：
+> **重要提示**：项目包含一个预编译的 macOS ARM64 二进制文件 `crypto/keys/bin/find_all_keys_macos.arm64`，该文件会读取微信进程内存以提取密钥。**我们强烈建议你从源码自行编译，而非直接信任预编译版本。**
+
+编译方法（一行命令）：
 
 ```bash
 # macOS ARM (M1/M2/M3)
@@ -232,7 +234,7 @@ cc -O2 -o crypto/keys/bin/find_all_keys_macos.arm64 crypto/keys/bin/find_all_key
 cc -O2 -o crypto/keys/bin/find_all_keys_macos.x86_64 crypto/keys/bin/find_all_keys_macos.c
 ```
 
-C 源码在 `crypto/keys/bin/find_all_keys_macos.c`，可自行审计。
+C 源码在 `crypto/keys/bin/find_all_keys_macos.c`，约 300 行，建议审计后再编译使用。Windows 和 Linux 的密钥提取是纯 Python 实现，不涉及编译二进制。
 
 ## 致谢
 

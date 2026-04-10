@@ -152,6 +152,7 @@ def save_results(db_files, salt_to_dbs, key_map, output_path, print_fn):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
+    os.chmod(output_path, 0o600)  # 仅当前用户可读写，保护密钥安全
     print_fn(f"\n密钥保存到: {output_path}")
 
     return key_map

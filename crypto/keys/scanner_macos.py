@@ -163,6 +163,7 @@ def extract_keys(db_dir, output_path, pid=None):
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(keys_data, f, indent=2, ensure_ascii=False)
+    os.chmod(output_path, 0o600)  # 仅当前用户可读写，保护密钥安全
 
     if os.path.abspath(c_output) != os.path.abspath(output_path):
         os.remove(c_output)

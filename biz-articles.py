@@ -74,9 +74,13 @@ def find_biz_account(db_dir, keys, name):
             tables = [r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
             for t in tables:
-                cols = [r[1] for r in conn.execute(f"PRAGMA table_info('{t}')").fetchall()]
+                # 白名单校验：表名只允许字母数字下划线
+                if not re.match(r'^[A-Za-z0-9_]+$', t):
+                    continue
+                cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{t}")').fetchall()]
                 if 'username' not in cols:
                     continue
+                # 列名来自硬编码白名单，安全
                 name_col = None
                 for c in ['display_name', 'nickname', 'remark', 'chat']:
                     if c in cols:
@@ -85,7 +89,7 @@ def find_biz_account(db_dir, keys, name):
                 if not name_col:
                     continue
                 rows = conn.execute(
-                    f"SELECT username FROM '{t}' WHERE {name_col} = ?", (name,)
+                    f'SELECT username FROM "{t}" WHERE {name_col} = ?', (name,)
                 ).fetchall()
                 if rows:
                     return rows[0][0]
