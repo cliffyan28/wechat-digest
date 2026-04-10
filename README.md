@@ -96,12 +96,16 @@ bash wechat-digest.sh
 # 指定日期
 bash wechat-digest.sh 2026-04-09
 
+# 指定语音转写引擎（默认 auto：讯飞 > Whisper > 跳过）
+VOICE_ENGINE=whisper bash wechat-digest.sh
+
 # 只提取聊天记录（不做总结）
 python3 extract-messages.py "群名" 2026-04-09 --hour-offset 2
 
 # 提取所有私聊记录（按联系人分组，显示备注名）
 python3 extract-all-private.py 2026-04-09 --hour-offset 2
 python3 extract-all-private.py 2026-04-09 --min-messages 5  # 只输出 ≥5 条消息的对话
+python3 extract-all-private.py 2026-04-09 --voice-engine xfyun  # 指定语音引擎
 
 # 语音转写（自动检测可用引擎：讯飞 > Whisper > 跳过）
 python3 voice_to_text.py 2026-04-09 --hour-offset 2
@@ -176,6 +180,9 @@ pip install openai-whisper
         <key>LLM_CMD</key>
         <string>claude -p</string>
         <!-- 替换为你的 LLM 命令，如 "llm -m gpt-4o"、"ollama run qwen2.5" 等 -->
+        <key>VOICE_ENGINE</key>
+        <string>auto</string>
+        <!-- 语音转写引擎：auto（讯飞>Whisper>跳过）/ xfyun / whisper / none -->
     </dict>
     <key>StandardOutPath</key>
     <string>/path/to/wechat-digest-project/logs/digest.log</string>
@@ -256,6 +263,7 @@ Chrome 旧版 `--print-to-pdf-no-header` 不一定生效。用 `--headless=new` 
 ```
 wechat-digest/
 ├── README.md               # 本文件
+├── LICENSE                  # MIT 协议
 ├── requirements.txt        # Python 依赖
 ├── prompt-template.txt     # LLM 总结 prompt 模板（可自定义）
 ├── init-keys.py            # 密钥提取（替代 wechat-cli init）

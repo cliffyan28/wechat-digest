@@ -97,6 +97,7 @@ GROUP_NAME="${GROUP_NAME:-你的群名}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/output}"
 HOUR_OFFSET=2  # 时间窗口：当天 02:00 ~ 次日 02:00（适合夜猫子群）
+VOICE_ENGINE="${VOICE_ENGINE:-auto}"  # 语音转写引擎：auto/xfyun/whisper/none
 # LLM_CMD: 通过环境变量配置，不设置则跳过总结（见文件头部说明）
 # ==============================
 
@@ -121,7 +122,7 @@ STDERR_TMP=$(mktemp /tmp/wechat-stderr-XXXXXX.txt)
 trap "rm -f $ENRICHED $STDERR_TMP" EXIT
 
 python3 "${SCRIPT_DIR}/extract-messages.py" "$GROUP_NAME" "$TARGET_DATE" \
-    --hour-offset "$HOUR_OFFSET" > "$ENRICHED" 2>"$STDERR_TMP"
+    --hour-offset "$HOUR_OFFSET" --voice-engine "$VOICE_ENGINE" > "$ENRICHED" 2>"$STDERR_TMP"
 
 total=$(grep -c "^\[" "$ENRICHED" || true)
 
