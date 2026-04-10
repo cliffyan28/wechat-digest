@@ -1,6 +1,6 @@
 # WeChat Group Digest
 
-微信群聊每日摘要自动化工具。从微信本地加密数据库提取聊天记录，用 Claude 生成结构化摘要，输出 Markdown + PDF。
+微信群聊每日摘要自动化工具。从微信本地加密数据库提取聊天记录，用 LLM 生成结构化摘要，输出 Markdown + PDF。支持任意 LLM（Claude、GPT、Gemini、本地模型等）。
 
 ## 效果
 
@@ -17,7 +17,7 @@
 解密密钥 (~/.wechat-digest/all_keys.json)
         ↓ extract-messages.py（解密 + 提取文本/链接消息）
 格式化聊天记录（含 URL）
-        ↓ claude -p（Claude CLI 结构化总结）
+        ↓ LLM_CMD（任意 LLM 结构化总结）
 Markdown 摘要
         ↓ pandoc + Chrome headless
 PDF
@@ -28,17 +28,14 @@ PDF
 ### 1. 安装依赖
 
 ```bash
-# Python 依赖
+# Python 依赖（必需）
 pip3 install pycryptodome zstandard
 
-# Claude CLI（用于 AI 总结）
-npm install -g @anthropic-ai/claude-code
-
-# pandoc（Markdown → HTML）
+# pandoc（可选，生成 PDF 用）
 brew install pandoc  # macOS
 # apt install pandoc  # Linux
 
-# Google Chrome（PDF 生成，通常已有）
+# Google Chrome（可选，生成 PDF 用，通常已有）
 ```
 
 ### 2. 提取密钥
@@ -67,7 +64,30 @@ known = {
 - 如果安装了 wechat-cli：`wechat-cli sessions --limit 1000 | grep "群名"`
 - 或者查看微信数据库目录下的文件名规律
 
-### 4. 运行
+### 4. 配置 LLM（可选）
+
+通过环境变量 `LLM_CMD` 配置你使用的 LLM。`LLM_CMD` 应为一个命令，从 stdin 读入 prompt + 聊天记录，输出摘要到 stdout。
+
+```bash
+# 方式一：Claude Code CLI（推荐，Anthropic 官方）
+# 安装：npm install -g @anthropic-ai/claude-code
+export LLM_CMD="claude -p"
+
+# 方式二：Simon Willison 的 llm CLI（支持多种模型）
+# 安装：pip install llm && llm keys set openai
+export LLM_CMD="llm -m gpt-4o"
+
+# 方式三：OpenAI 官方 CLI
+export LLM_CMD="openai chat -m gpt-4o"
+
+# 方式四：本地模型 via Ollama（免费，离线可用）
+# 安装：https://ollama.com
+export LLM_CMD="ollama run qwen2.5"
+```
+
+> 如果不配置 `LLM_CMD`，脚本只会提取聊天记录（.md），不会生成摘要和 PDF。你可以把聊天记录手动粘贴到任何 AI 对话中总结。
+
+### 5. 运行
 
 ```bash
 # 手动运行（总结昨天）
@@ -84,7 +104,7 @@ python3 biz-articles.py 某公众号 --since 2026-04-01 --format md
 python3 biz-articles.py --list  # 列出所有关注的公众号
 ```
 
-### 5. 设置每日自动运行（macOS launchd）
+### 6. 设置每日自动运行（macOS launchd）
 
 创建 `~/Library/LaunchAgents/com.wechat-digest.plist`：
 
@@ -112,10 +132,13 @@ python3 biz-articles.py --list  # 列出所有关注的公众号
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <!-- 重要：必须包含 python3/claude/pandoc 所在的路径 -->
+        <!-- 重要：必须包含 python3/pandoc/LLM CLI 所在的路径 -->
         <string>/your/anaconda/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>/Users/your-username</string>
+        <key>LLM_CMD</key>
+        <string>claude -p</string>
+        <!-- 替换为你的 LLM 命令，如 "llm -m gpt-4o"、"ollama run qwen2.5" 等 -->
     </dict>
     <key>StandardOutPath</key>
     <string>/path/to/wechat-digest-project/logs/digest.log</string>
@@ -146,11 +169,11 @@ Python 脚本（`init-keys.py`、`extract-messages.py`、`biz-articles.py`）是
 4. **Chrome 路径**：改为 `"C:\Program Files\Google\Chrome\Application\chrome.exe"`（或设置 `CHROME_PATH` 环境变量）
 5. **定时任务**：用 Windows 任务计划程序替代 launchd
 
-或者你也可以只用 Python 脚本提取消息，手动喂给 Claude 总结：
+或者你也可以只用 Python 脚本提取消息，手动喂给任意 AI 总结：
 
 ```bash
 python extract-messages.py "群名" 2026-04-09 --hour-offset 2 > chat.txt
-cat chat.txt | claude -p "请总结这段群聊记录..." > summary.md
+# 然后把 chat.txt 的内容粘贴到 ChatGPT / Claude / Gemini 等任意 AI 对话中
 ```
 
 ### Linux 用户说明
@@ -177,10 +200,10 @@ sudo python3 init-keys.py
 `WCDB_CT_message_content = 4` 表示内容是 zstd 压缩的（WCDB 特性），需要解压后才能读取。
 
 ### 4. launchd PATH 缺失
-macOS launchd 环境的 PATH 很精简，不包含 homebrew、anaconda 等路径。必须在 plist 里显式设置完整 PATH，否则找不到 `python3`、`claude` 等命令。
+macOS launchd 环境的 PATH 很精简，不包含 homebrew、anaconda 等路径。必须在 plist 里显式设置完整 PATH，否则找不到 `python3` 等命令。
 
-### 5. Claude 会篡改统计数字
-在 prompt 里写 `消息总数：510 条`，Claude 可能自作主张改成 `约 280 条`。需要在 prompt 里强调「这个数字是精确统计，请原样使用，不要修改」。
+### 5. LLM 会篡改统计数字
+在 prompt 里写 `消息总数：510 条`，LLM 可能自作主张改成 `约 280 条`。需要在 prompt 里强调「这个数字是精确统计，请原样使用，不要修改」。
 
 ### 6. 微信必须先启动同步
 数据库是本地文件。昨晚关机后到今早开机之间的消息，需要微信启动并同步后才会写入数据库。脚本用 `pgrep` 检测微信进程，检测到后等 2 分钟再提取。
@@ -197,6 +220,7 @@ Chrome 旧版 `--print-to-pdf-no-header` 不一定生效。用 `--headless=new` 
 wechat-digest/
 ├── README.md               # 本文件
 ├── requirements.txt        # Python 依赖
+├── prompt-template.txt     # LLM 总结 prompt 模板（可自定义）
 ├── init-keys.py            # 密钥提取（替代 wechat-cli init）
 ├── extract-messages.py     # 群聊消息提取（直接读数据库）
 ├── biz-articles.py         # 公众号文章查询
@@ -239,4 +263,3 @@ C 源码在 `crypto/keys/bin/find_all_keys_macos.c`，约 300 行，建议审计
 ## 致谢
 
 - 数据库解密模块来自 [wechat-cli](https://github.com/freestylefly/wechat-cli)（Apache 2.0 协议）
-- AI 总结由 [Claude](https://claude.ai) 驱动

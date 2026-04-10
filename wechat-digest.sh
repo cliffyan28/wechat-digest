@@ -1,35 +1,42 @@
 #!/bin/bash
 #
 # WeChat 群聊每日摘要脚本
-# 直接从微信本地数据库提取聊天记录，用 Claude 做结构化总结，保存为 Markdown + PDF
+# 直接从微信本地数据库提取聊天记录，调用 LLM 做结构化总结，保存为 Markdown + PDF
 #
 # 产出文件（以 2026-04-09 为例）：
 #   2026-04-09-我的群-聊天记录.md  — 原始聊天记录
-#   2026-04-09-我的群-摘要.md      — 结构化摘要
-#   2026-04-09-我的群-摘要.pdf     — PDF 版摘要
+#   2026-04-09-我的群-摘要.md      — 结构化摘要（需配置 LLM_CMD）
+#   2026-04-09-我的群-摘要.pdf     — PDF 版摘要（需配置 LLM_CMD + pandoc + Chrome）
 #
 # 用法：
 #   ./wechat-digest.sh                    # 总结昨天的记录
 #   ./wechat-digest.sh 2026-04-01         # 总结指定日期的记录
 #   GROUP_NAME="其他群" ./wechat-digest.sh # 总结其他群
 #
+# LLM 配置（通过环境变量 LLM_CMD）：
+#   LLM_CMD 应为一个命令，从 stdin 读取 prompt+聊天记录，输出摘要到 stdout。
+#   示例：
+#     export LLM_CMD="claude -p"                              # Claude Code CLI
+#     export LLM_CMD="openai chat -m gpt-4o"                  # OpenAI CLI (github.com/openai/openai-python)
+#     export LLM_CMD="llm -m gpt-4o"                          # Simon Willison's llm CLI (github.com/simonw/llm)
+#     export LLM_CMD="ollama run qwen2.5"                     # 本地模型 via Ollama
+#   如果不设置 LLM_CMD，脚本只会提取聊天记录，不做总结和 PDF。
+#
 # 前置条件：
-#   1. 已运行 sudo python3 init-keys.py（或 sudo wechat-cli init）
-#   2. claude CLI 已安装（npm install -g @anthropic-ai/claude-code）
-#   3. pip3 install -r requirements.txt
-#   4. pandoc 已安装（brew install pandoc / apt install pandoc）
-#   5. Google Chrome 已安装（用于 headless PDF 生成���
+#   1. 已运行 sudo python3 init-keys.py（提取微信数据库密钥）
+#   2. pip3 install -r requirements.txt
+#   3. （可选）配置 LLM_CMD 环境变量（用于 AI 总结）
+#   4. （可选）pandoc + Google Chrome（用于生成 PDF）
 #
 # ============ 踩坑记录 ============
 #
 # 1. wechat-cli history 命令不稳定
 #    wechat-cli history 有时返回 0 条消息（原因不明，可能跟微信重启有关）。
 #    所以本脚本不依赖 wechat-cli history，而是用 extract-messages.py 直接
-#    解密读取微信的 SQLite 数据库。wechat-cli 仅用于初始化（获取密钥）和
-#    查询 sessions（获取群 username）。
+#    解密读取微信的 SQLite 数据库。
 #
 # 2. 微信消息类型是复合值
-#    微信数据库的 local_type 字段是复合类��，低 32 位才是真实消息类型。
+#    微信数据库的 local_type 字段是复合类型，低 32 位才是真实消息类型。
 #    比如链接消息 type=49，但数据库里存的可能是 244813135921。
 #    查询时必须用 (local_type & 0xFFFFFFFF) = 49，不能直接 local_type = 49。
 #
@@ -43,8 +50,8 @@
 #    EnvironmentVariables 中显式设置 PATH，包含这些路径。
 #    示例：/Users/你的用户名/opt/anaconda3/bin:/opt/homebrew/bin:/usr/local/bin:...
 #
-# 5. Claude 可能篡改消息数量
-#    即使在 prompt 中明确写了"消息总数：510 条"，Claude 有时会自作主张改成
+# 5. LLM 可能篡改消息数量
+#    即使在 prompt 中明确写了"消息总数：510 条"，LLM 有时会自作主张改成
 #    "约 280 条"之类的估算值。解决方法：在 prompt 中加注释强调"这个数字是
 #    精确统计，请原样使用，不要修改"。
 #
@@ -65,7 +72,7 @@
 
 set -euo pipefail
 
-# ============ 等待微��启动 ============
+# ============ 等待微信启动 ============
 # 微信需要启动并同步消息后数据库才有最新数据
 # 手动运行时可 Ctrl+C 跳过等待
 MAX_WAIT=1800  # 最多等 30 分钟
@@ -82,7 +89,7 @@ while ! pgrep -x "WeChat" > /dev/null 2>&1; do
     echo "  已等待 ${waited}s..."
 done
 # 微信已启动，再等 2 分钟让消息同步完成
-echo "微信已启���，等待 2 分钟同步消息..."
+echo "微信已启动，等待 2 分钟同步消息..."
 sleep 120
 
 # ============ 配置 ============
@@ -90,6 +97,7 @@ GROUP_NAME="${GROUP_NAME:-你的群名}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/output}"
 HOUR_OFFSET=2  # 时间窗口：当天 02:00 ~ 次日 02:00（适合夜猫子群）
+# LLM_CMD: 通过环境变量配置，不设置则跳过总结（见文件头部说明）
 # ==============================
 
 # 日期：参数传入 或 默认昨天
@@ -123,60 +131,86 @@ if [[ $total -eq 0 ]]; then
     exit 0
 fi
 
-echo "$(date '+%H:%M:%S') 共获取 ${total} 条消息，正在用 Claude 生成摘要..."
-
 # 2. 保存聊天记录原文
 mkdir -p "$OUTPUT_DIR"
 CHAT_LOG="${OUTPUT_DIR}/${TARGET_DATE}-${GROUP_NAME}-聊天记录.md"
 cp "$ENRICHED" "$CHAT_LOG"
-echo "聊天记录已保存到：${CHAT_LOG}"
+echo "$(date '+%H:%M:%S') 共 ${total} 条消息，聊天记录已保存到：${CHAT_LOG}"
 
-# 3. 调用 Claude 做总结
+# 3. 调用 LLM 做总结
+if [[ -z "${LLM_CMD:-}" ]]; then
+    echo ""
+    echo "未配置 LLM_CMD 环境变量，跳过 AI 总结和 PDF 生成。"
+    echo "如需自动总结，请设置 LLM_CMD，例如："
+    echo "  export LLM_CMD=\"claude -p\"        # Claude Code"
+    echo "  export LLM_CMD=\"llm -m gpt-4o\"    # llm CLI"
+    echo "  export LLM_CMD=\"ollama run qwen2.5\" # Ollama 本地模型"
+    echo ""
+    echo "你也可以手动总结："
+    echo "  cat \"${CHAT_LOG}\" | your-llm-command < prompt-template.txt"
+    exit 0
+fi
+
+echo "$(date '+%H:%M:%S') 正在用 LLM 生成摘要..."
+
 OUTPUT_FILE="${OUTPUT_DIR}/${TARGET_DATE}-${GROUP_NAME}-摘要.md"
 
-cat "$ENRICHED" | claude -p "你是一个微信群聊总结助手。以下是微信群「${GROUP_NAME}」在 ${TARGET_DATE} 的聊天记录（格式为 [时间] 发送者: 内容，链接消息后面会附上 URL）。
+# 读取 prompt 模板并替换变量
+PROMPT_TEMPLATE="${SCRIPT_DIR}/prompt-template.txt"
+if [[ ! -f "$PROMPT_TEMPLATE" ]]; then
+    echo "错误：找不到 prompt 模板文件 ${PROMPT_TEMPLATE}"
+    exit 1
+fi
 
-请生成一份结构化的每日摘要，用中文输出，格式如下：
+PROMPT=$(sed \
+    -e "s/{{GROUP_NAME}}/${GROUP_NAME}/g" \
+    -e "s/{{TARGET_DATE}}/${TARGET_DATE}/g" \
+    -e "s/{{TOTAL}}/${total}/g" \
+    "$PROMPT_TEMPLATE")
 
-# ${GROUP_NAME} 群聊摘要 - ${TARGET_DATE}
-
-## 📊 今日概览
-- 消息总数：${total} 条（仅文本/链接）（这个数字是精确统计，请原样使用，不要修改）
-- 最活跃时段：XX:XX - XX:XX（根据聊天记录的时间戳判断）
-
-## 💡 实用 Tips & 技巧
-（提取群友分享的具体可操作的技巧、工具推荐、prompt 技巧等。只保留有实际操作价值的信息，去掉纯主观感受或闲聊。）
-
-## 🔥 热点讨论
-（列出 3-5 个最重要的讨论话题。每个话题用 bullet points 列出关键观点，只保留有信息量的观点，去掉纯主观感受、闲聊和低价值内容。格式示例：
-### 1. 话题标题
-- 观点一
-- 观点二
-- 观点三
-）
-
-## 🔗 推文分享
-（用表格列出分享的链接、工具、论文、项目等。表格包含三列：资源 | 内容概要 | 群友评价。
-- 资源列：对于聊天中有 URL 的资源，必须用 markdown 链接格式 [标题](URL)。没有 URL 的用纯文本。
-- 内容概要列：用一两句话高度概括该资源的核心内容（需要你根据标题和上下文判断，不是照抄聊天记录）。
-- 群友评价列：如果群友对该资源有评论或评价，写在这里；没有就留空。
-）
-
-排序规则（所有模块内都按此优先级排序）：
-1. 模型相关（新模型发布、模型对比、性能评测等）排最前
-2. Coding Agent 相关（Claude Code、Codex、Cursor、Windsurf 等编程工具）排第二
-3. 其他 AI 应用（AI 产品、工具、workflow 等）排第三
-4. 非 AI 话题排最后
-
-其他注意：
-- 保持客观，忠实原文
-- 不要提及任何群友的名字或昵称，用\"有人\"、\"群友\"、\"有群友指出\"等替代
-- 如果某个分类没有相关内容，可以省略该分类
-- 重点关注有信息量的内容，去掉水聊和纯主观感受" > "$OUTPUT_FILE"
+# 将 prompt + 聊天记录一起发给 LLM
+{
+    echo "$PROMPT"
+    echo ""
+    echo "--- 以下是聊天记录 ---"
+    echo ""
+    cat "$ENRICHED"
+} | $LLM_CMD > "$OUTPUT_FILE"
 
 echo "$(date '+%H:%M:%S') Markdown 生成完毕"
 
-# 4. 生成 PDF（pandoc 转 HTML → 注入 CSS → Chrome headless 打印）
+# 4. 生成 PDF（pandoc 转 HTML -> 注入 CSS -> Chrome headless 打印）
+#    如果 pandoc 或 Chrome 不可用，跳过 PDF 生成
+if ! command -v pandoc &> /dev/null; then
+    echo "未安装 pandoc，跳过 PDF 生成（brew install pandoc）"
+    echo ""
+    echo "全部完成"
+    echo "摘要：${OUTPUT_FILE}"
+    echo "聊天记录：${CHAT_LOG}"
+    exit 0
+fi
+
+CHROME_PATH="${CHROME_PATH:-}"
+if [[ -z "$CHROME_PATH" ]]; then
+    # 自动检测 Chrome 路径
+    if [[ "$(uname)" == "Darwin" ]]; then
+        CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    elif command -v google-chrome &> /dev/null; then
+        CHROME_PATH="google-chrome"
+    elif command -v chromium &> /dev/null; then
+        CHROME_PATH="chromium"
+    fi
+fi
+
+if [[ -z "$CHROME_PATH" ]] || ! [[ -x "$CHROME_PATH" || $(command -v "$CHROME_PATH" 2>/dev/null) ]]; then
+    echo "未找到 Chrome，跳过 PDF 生成"
+    echo ""
+    echo "全部完成"
+    echo "摘要：${OUTPUT_FILE}"
+    echo "聊天记录：${CHAT_LOG}"
+    exit 0
+fi
+
 PDF_FILE="${OUTPUT_DIR}/${TARGET_DATE}-${GROUP_NAME}-摘要.pdf"
 echo "正在生成 PDF..."
 
@@ -229,8 +263,6 @@ open(html_path, 'w').write(html)
 PYCSS
 
 # Chrome headless 生成 PDF（见踩坑记录 #8：必须用 --headless=new + --no-pdf-header-footer）
-# macOS Chrome 路径，Linux/Windows 用户请修改为对应路径
-CHROME_PATH="${CHROME_PATH:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 "$CHROME_PATH" \
   --headless=new --disable-gpu --no-sandbox \
   --print-to-pdf="$PDF_FILE" \
@@ -241,9 +273,6 @@ rm -f "$HTML_TMP"
 
 echo ""
 echo "$(date '+%H:%M:%S') 全部完成"
-echo "摘要已保存到：${OUTPUT_FILE}"
-echo "PDF 已保存到：${PDF_FILE}"
+echo "摘要：${OUTPUT_FILE}"
+echo "PDF：${PDF_FILE}"
 echo "聊天记录：${CHAT_LOG}"
-echo ""
-head -20 "$OUTPUT_FILE"
-echo "..."
