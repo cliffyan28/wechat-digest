@@ -1,5 +1,6 @@
 pycryptodome>=3.19
 zstandard>=0.22
+playwright>=1.40           # 公众号文章正文抓取（需 playwright install chromium）
 pilk>=0.2                  # SILK 语音解码（语音转写必需）
 websocket-client>=1.6      # 讯飞 API WebSocket（可选，用讯飞转写时需要）
 # openai-whisper            # 本地 Whisper 转写（可选，pip install openai-whisper）

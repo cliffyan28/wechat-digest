@@ -31,6 +31,9 @@ PDF
 # Python 依赖（必需）
 pip3 install pycryptodome zstandard
 
+# 公众号文章正文抓取（可选，fetch-article.py 用）
+pip3 install playwright && playwright install chromium
+
 # pandoc（可选，生成 PDF 用）
 brew install pandoc  # macOS
 # apt install pandoc  # Linux
@@ -117,6 +120,12 @@ python3 extract-messages.py "群名" 2026-04-09 --hour-offset 2 --voice-engine a
 # 查询公众号文章
 python3 biz-articles.py 某公众号 --since 2026-04-01 --format md
 python3 biz-articles.py --list  # 列出所有关注的公众号
+
+# 抓取公众号文章正文（需要 playwright）
+python3 fetch-article.py "https://mp.weixin.qq.com/s?..."           # 单篇
+python3 biz-articles.py 某公众号 --limit 5 --format json \
+  | python3 fetch-article.py --stdin --outdir ./articles             # 批量
+python3 fetch-article.py --format text "https://..."                 # 纯文本输出（适合喂 LLM）
 ```
 
 ### 6. 配置语音转写（可选）
@@ -270,7 +279,8 @@ wechat-digest/
 ├── extract-messages.py     # 群聊消息提取（直接读数据库）
 ├── extract-all-private.py  # 所有私聊消息提取（按联系人分组）
 ├── voice_to_text.py        # 语音转文字模块（讯飞/Whisper）
-├── biz-articles.py         # 公众号文章查询
+├── biz-articles.py         # 公众号文章查询（标题/URL/描述）
+├── fetch-article.py        # 公众号文章正文抓取（Playwright headless Chrome）
 ├── wechat-digest.sh        # 主流程脚本（提取 → 总结 → PDF）
 ├── crypto/                 # 解密模块（来自 wechat-cli, Apache 2.0）
 │   ├── __init__.py
