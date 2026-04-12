@@ -121,26 +121,19 @@ def extract_all_private(target_date, hour_offset=0, min_messages=1, voice_engine
     ts_start = int((base + datetime.timedelta(hours=hour_offset)).timestamp())
     ts_end = int((base + datetime.timedelta(days=1, hours=hour_offset)).timestamp())
 
-    # 解密消息数据库
-    enc_key = bytes.fromhex(keys['message/message_0.db']['enc_key'])
-    db_path = os.path.join(db_dir, 'message/message_0.db')
-    if not os.path.exists(db_path):
-        print(f"数据库不存在: {db_path}", file=sys.stderr)
+    # 收集所有可用的 message_N.db
+    msg_dbs = []
+    for key_name, key_info in keys.items():
+        if re.match(r'^message/message_\d+\.db$', key_name) and 'enc_key' in key_info:
+            db_path = os.path.join(db_dir, key_name)
+            if os.path.exists(db_path):
+                msg_dbs.append((key_name, db_path, bytes.fromhex(key_info['enc_key'])))
+
+    if not msg_dbs:
+        print("未找到可用的消息数据库", file=sys.stderr)
         return {}, {}
 
-    cache_dir = tempfile.mkdtemp(prefix='wechat-private-')
-    out_path = os.path.join(cache_dir, 'dec.db')
-    full_decrypt(db_path, out_path, enc_key)
-    wal_path = db_path + '-wal'
-    if os.path.exists(wal_path):
-        decrypt_wal(wal_path, out_path, enc_key)
-
-    conn = sqlite3.connect(out_path)
-
-    # 获取所有非群聊的 username
-    private_users = conn.execute(
-        "SELECT user_name FROM Name2Id WHERE user_name NOT LIKE '%@chatroom'"
-    ).fetchall()
+    print(f"扫描 {len(msg_dbs)} 个消息数据库...", file=sys.stderr)
 
     # 加载联系人显示名
     contact_names = load_contact_names(db_dir, keys)
@@ -149,24 +142,63 @@ def extract_all_private(target_date, hour_offset=0, min_messages=1, voice_engine
     voice_data_map = _load_voice_data(db_dir, keys, ts_start, ts_end)
     transcriber = _get_transcriber(voice_engine) if voice_data_map else None
 
-    all_chats = {}
-    for (username,) in private_users:
-        table = 'Msg_' + hashlib.md5(username.encode()).hexdigest()
+    # 从所有 db 收集私聊用户和消息
+    all_chats = {}  # username -> [(ts, content, ct, lt), ...]
+    all_private_users = set()
+
+    for key_name, db_path, enc_key in msg_dbs:
+        cache_dir = tempfile.mkdtemp(prefix='wechat-private-')
+        out_path = os.path.join(cache_dir, 'dec.db')
         try:
-            rows = conn.execute(f"""
-                SELECT create_time, message_content, WCDB_CT_message_content, local_type
-                FROM "{table}"
-                WHERE create_time >= ? AND create_time < ?
-                ORDER BY create_time
-            """, (ts_start, ts_end)).fetchall()
-        except sqlite3.OperationalError:
-            continue
+            full_decrypt(db_path, out_path, enc_key)
+            wal_path = db_path + '-wal'
+            if os.path.exists(wal_path):
+                decrypt_wal(wal_path, out_path, enc_key)
 
-        if not rows:
-            continue
+            conn = sqlite3.connect(out_path)
+            try:
+                # 获取此 db 中的非群聊 username
+                try:
+                    users = conn.execute(
+                        "SELECT user_name FROM Name2Id WHERE user_name NOT LIKE '%@chatroom'"
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    continue
 
+                db_found = 0
+                for (username,) in users:
+                    all_private_users.add(username)
+                    table = 'Msg_' + hashlib.md5(username.encode()).hexdigest()
+                    try:
+                        rows = conn.execute(f"""
+                            SELECT create_time, message_content, WCDB_CT_message_content, local_type
+                            FROM "{table}"
+                            WHERE create_time >= ? AND create_time < ?
+                            ORDER BY create_time
+                        """, (ts_start, ts_end)).fetchall()
+                    except sqlite3.OperationalError:
+                        continue
+                    if rows:
+                        all_chats.setdefault(username, []).extend(rows)
+                        db_found += len(rows)
+                if db_found:
+                    print(f"  {key_name}: {db_found} 条消息", file=sys.stderr)
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"  {key_name}: 跳过 ({e})", file=sys.stderr)
+        finally:
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+
+    # 处理消息：格式化为文本
+    result_chats = {}
+    for username, raw_rows in all_chats.items():
+        raw_rows.sort(key=lambda r: r[0])
         messages = []
-        for ts, content, ct, lt in rows:
+        for ts, content, ct, lt in raw_rows:
             real_type = lt & 0xFFFFFFFF
             if real_type not in (1, 34, 49):
                 continue
@@ -243,10 +275,9 @@ def extract_all_private(target_date, hour_offset=0, min_messages=1, voice_engine
                 messages.append(line)
 
         if len(messages) >= min_messages:
-            all_chats[username] = messages
+            result_chats[username] = messages
 
-    conn.close()
-    os.remove(out_path)
+    all_chats = result_chats
 
     return all_chats, contact_names
 

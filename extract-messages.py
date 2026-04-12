@@ -118,38 +118,60 @@ def extract_messages(group_username, target_date, hour_offset=0, voice_engine='a
     ts_start = int((base + datetime.timedelta(hours=hour_offset)).timestamp())
     ts_end = int((base + datetime.timedelta(days=1, hours=hour_offset)).timestamp())
 
-    enc_key = bytes.fromhex(keys['message/message_0.db']['enc_key'])
-    db_path = os.path.join(db_dir, 'message/message_0.db')
-    if not os.path.exists(db_path):
-        print(f"数据库不存在: {db_path}", file=sys.stderr)
+    # 收集所有可用的 message_N.db（支持多数据库）
+    msg_dbs = []
+    for key_name, key_info in keys.items():
+        if re.match(r'^message/message_\d+\.db$', key_name) and 'enc_key' in key_info:
+            db_path = os.path.join(db_dir, key_name)
+            if os.path.exists(db_path):
+                msg_dbs.append((key_name, db_path, bytes.fromhex(key_info['enc_key'])))
+
+    if not msg_dbs:
+        print("未找到可用的消息数据库", file=sys.stderr)
         return []
 
-    cache_dir = tempfile.mkdtemp(prefix='wechat-extract-')
-    out_path = os.path.join(cache_dir, 'dec.db')
-    full_decrypt(db_path, out_path, enc_key)
-    wal_path = db_path + '-wal'
-    if os.path.exists(wal_path):
-        decrypt_wal(wal_path, out_path, enc_key)
+    print(f"扫描 {len(msg_dbs)} 个消息数据库...", file=sys.stderr)
 
-    conn = sqlite3.connect(out_path)
-    try:
-        exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (table_name,)
-        ).fetchone()
-        if not exists:
-            print(f"表不存在: {table_name}", file=sys.stderr)
-            return []
+    rows = []
+    for key_name, db_path, enc_key in msg_dbs:
+        cache_dir = tempfile.mkdtemp(prefix='wechat-extract-')
+        out_path = os.path.join(cache_dir, 'dec.db')
+        try:
+            full_decrypt(db_path, out_path, enc_key)
+            wal_path = db_path + '-wal'
+            if os.path.exists(wal_path):
+                decrypt_wal(wal_path, out_path, enc_key)
 
-        rows = conn.execute(f"""
-            SELECT create_time, message_content, WCDB_CT_message_content, local_type
-            FROM "{table_name}"
-            WHERE create_time >= ? AND create_time < ?
-            ORDER BY create_time
-        """, (ts_start, ts_end)).fetchall()
-    finally:
-        conn.close()
-        os.remove(out_path)
+            conn = sqlite3.connect(out_path)
+            try:
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (table_name,)
+                ).fetchone()
+                if not exists:
+                    continue
+
+                db_rows = conn.execute(f"""
+                    SELECT create_time, message_content, WCDB_CT_message_content, local_type
+                    FROM "{table_name}"
+                    WHERE create_time >= ? AND create_time < ?
+                    ORDER BY create_time
+                """, (ts_start, ts_end)).fetchall()
+                if db_rows:
+                    print(f"  {key_name}: {len(db_rows)} 条消息", file=sys.stderr)
+                    rows.extend(db_rows)
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"  {key_name}: 跳过 ({e})", file=sys.stderr)
+        finally:
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+
+    # 多 db 结果按时间排序
+    rows.sort(key=lambda r: r[0])
 
     # 检查是否有语音消息，按需加载语音数据和转写器
     has_voice = any((lt & 0xFFFFFFFF) == 34 for _, _, _, lt in rows)

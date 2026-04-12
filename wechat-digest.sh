@@ -229,8 +229,8 @@ html = re.sub(r'<header id="title-block-header">.*?</header>', '', html, flags=r
 
 css = """
 <style>
-  @page { size: A4; margin: 2.2cm 2.5cm; }
-  @media print { @page { margin: 2.2cm 2.5cm; } }
+  @page { size: A4; margin: 1.5cm 1.8cm; }
+  @media print { @page { margin: 1.5cm 1.8cm; } }
   body {
     font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     font-size: 14px; line-height: 1.9; color: #1a1a1a;
